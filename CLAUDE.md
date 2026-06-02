@@ -1,545 +1,369 @@
 # CLAUDE.md
 
-团队共享的 webqa-agent 项目指南。
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**重要提示**:本文件是团队共享的,所有开发者都应遵循这些规范。个人偏好和本地配置应放在 `CLAUDE.local.md`(不会被 git 跟踪)。
-
-## 模块化规则引用
-
-本项目遵循模块化规则组织:
-
-- **Python 代码质量**: `.claude/rules/python-quality.md`
-- **测试模式**: `.claude/rules/testing.md`
-- **Git 工作流**: `.claude/rules/git-workflow.md`
-- **浏览器测试**: `.claude/rules/domain-specific/browser-testing.md`
-
-这些规则继承自全局配置(`~/.claude/CLAUDE.md` 和 `~/.claude/rules/`),并增加了 webqa-agent 特定的要求。
+团队共享的 webqa-agent 项目指南。个人偏好和本地配置请放在 `CLAUDE.local.md`（git 不跟踪）。
 
 ______________________________________________________________________
 
-## 研究和规划 (CRITICAL)
+## 项目概览
 
-**对于复杂任务或涉及第三方依赖,必须先做调研:**
+**WebQA Agent** 是一个自主式 Web 浏览器代理，用自然语言目标驱动浏览器完成功能、UX、性能、安全测试。**v0.3.2**（分支 `main`），Python `>=3.11`。
 
-### 1. 使用 Context7 MCP 工具
+### 三种执行模式（按 `engine` + `gen|run` 子命令组合）
 
-- 工具:`mcp__plugin_context7_context7__resolve-library-id` 和 `query-docs`
-- 获取最新的库文档和最佳实践
-- 了解正确的 API 使用方式
-- 避免基于过时知识的幻觉
+| 模式             | 子命令  | `engine` 配置       | 驱动方式                                | 适用场景                                |
+| :--------------- | :------ | :------------------ | :-------------------------------------- | :-------------------------------------- |
+| **Flash**（默认）| `gen`   | `flash`（默认即可） | chrome-devtools MCP → Chrome            | 一句话目标、秒级反馈、IDE/MCP 内联调用 |
+| **Standard Gen** | `gen`   | `standard`          | Playwright + LangGraph 工作流           | AI 自主探索、深度回归                   |
+| **Run**          | `run`   | `standard`（强制）  | Playwright + 顺序执行 YAML 用例         | 可重复回归、CI 固定用例                 |
 
-### 2. 使用联网搜索
-
-- 工具:`WebSearch`
-- 查找最新的技术文章和实践
-- 了解常见问题和解决方案
-- 验证技术决策的合理性
-
-### 3. 调研场景示例
-
-- ✅ 集成新的第三方库(Playwright, LangChain, FastAPI 等)
-- ✅ 实现复杂的异步模式或并发控制
-- ✅ 使用不熟悉的 Python 特性或设计模式
-- ✅ 配置复杂的工具链(Docker, CI/CD 等)
-- ✅ 实现安全相关功能(认证、加密等)
-
-### 4. 调研步骤
-
-```
-a. 识别任务中的三方依赖或复杂技术点
-b. 使用 Context7 获取官方文档
-c. 使用 WebSearch 查找最佳实践和常见陷阱
-d. 基于调研结果制定实现计划
-e. 开始编码实现
-```
-
-**❌ 不要做的事情**:
-
-- 不要想当然地认为知道某个库的用法
-- 不要跳过调研直接开始规划和写代码
-- 不要基于旧版本的知识进行实现
+> Run 模式只支持 `engine: standard`；Flash 是 `gen` 专属。
+> 模式细节与配置项以 [`docs/MODES&CLI.md`](docs/MODES&CLI.md) 为准，本文件只描述代码架构。
 
 ______________________________________________________________________
 
-## 代码质量要求 (CRITICAL)
+## 常用命令
 
-### 规范性和可读性
+```bash
+# 安装与启动
+uv sync                                          # 同步依赖（Python>=3.11）
+uv run playwright install chromium               # Standard/Run 模式需要
+npm install -g chrome-devtools-mcp@latest        # Flash 模式需要（Node 20.19+ LTS）
 
-- **类型注解**:严格模式 - 所有函数必须有类型注解
-- **注释密度**:中等 - 复杂逻辑需要注释,简单逻辑不需要
-- **错误处理**:显式 - 明确的 try-except 和错误处理
-- **日志级别**:生产环境 info,调试时 debug
+# CLI
+webqa-agent init                                 # 生成 config.yaml 模板
+webqa-agent init -m run                          # 生成 Run 模式模板
+webqa-agent gen                                  # 默认 Flash 引擎运行
+webqa-agent gen -c <config> -w <workers>         # 指定配置 + 并发
+webqa-agent run -c <config-or-dir>               # Run 模式（YAML 用例）
+webqa-mcp-server                                 # 启动 FastMCP 服务（暴露给 Cursor/Claude Code）
 
-### 避免代码冗余
+# 测试
+uv run pytest tests/                             # 全部测试（含 Flash 子套件 webqa_agent/executor/flash/tests）
+uv run pytest tests/test_action_executor.py -v   # 单文件
+uv run pytest tests/ -k "cc_mini"                # 仅跑 Flash 相关
+uv run pytest tests/test_crawler.py --url https://example.com  # 自定义目标 URL
 
-- ❌ 不要创建功能重复的类、方法或变量
-- ❌ 不要复制粘贴代码,使用函数/方法复用
-- ❌ 不要保留已废弃的代码(直接删除,Git 有历史记录)
-- ✅ 重构时整合相似功能
-- ✅ 使用继承和组合减少重复
+# 代码质量（统一走 pre-commit）
+pre-commit install                               # 一次性安装钩子
+pre-commit run --files <files>                   # 检查指定文件
+pre-commit run --all-files                       # 全量检查
 
-### 命名规范
-
-- **类名**:PascalCase
-- **函数/方法**:snake_case
-- **常量**:UPPER_SNAKE_CASE
-- **私有成员**:\_leading_underscore
-- **避免模糊命名**:`temp`, `tmp`, `data` 等
-
-详细规范见:`.claude/rules/python-quality.md`
+# 全栈平台（Docker Compose）
+cd deploy/docker-compose && cp .env.example .env && ./start.sh
+```
 
 ______________________________________________________________________
 
-## 兼容性和稳定性 (CRITICAL)
+## 架构总览
 
-**避免非必要的 breaking changes 和破坏性修改:**
+### CLI 入口
 
-### 1. 保持架构和使用的一致性
+`webqa_agent/cli.py:main()` 解析参数后分发到 `execute_gen_mode()` 或 `execute_run_mode()`：
 
-- ❌ 不要随意修改公共 API 的签名
-- ❌ 不要改变已有功能的行为方式
-- ❌ 不要删除正在使用的代码而不考虑影响
-- ✅ 新功能应该向后兼容
-- ✅ 废弃功能使用 deprecation 警告而不是直接删除
-- ✅ API 变更需要提供迁移指南
+- `execute_gen_mode()` 读取 `engine` 字段决定走 Flash（`_load_cc_mini_runner` → `executor/flash/runner.py`）或 Standard（`GenExecutor`）。
+- `execute_run_mode()` 直接走 `RunExecutor`。
 
-### 2. 新特性设计原则
+`webqa-mcp-server` 入口在 `webqa_agent/mcp_server/server.py:main()`（FastMCP）。
 
-- **零学习成本优先**:新功能应该符合现有模式
-- **可选而非强制**:新特性默认关闭或可选启用
-- **渐进式增强**:不强迫用户立即升级或改动
-- **文档完善**:新功能需要清晰的使用文档
+### 包结构（重点模块）
 
-### 3. 重构前的检查清单
+```
+webqa_agent/
+├── cli.py                  # CLI 入口、engine 分发
+├── config_models/          # Pydantic V2: BrowserConfig / LLMConfig / GenConfig / RunConfig
+├── executor/
+│   ├── gen_executor.py     # Standard Gen 模式编排
+│   ├── run_executor.py     # Run 模式编排
+│   ├── flash_executor.py   # Flash → Standard 报告桥接
+│   ├── flash_report_adapter.py
+│   ├── result_aggregator.py
+│   ├── gen/                # Standard Gen 的 LangGraph 工作流
+│   │   ├── graph.py        # 工作流主图
+│   │   ├── agents/         # 执行 agent（execute_agent.py）
+│   │   ├── state/          # 状态 schema
+│   │   └── utils/          # CaseRecorder / MessageConverter
+│   ├── run/                # Run 模式 case 执行
+│   └── flash/              # ⚡ Flash 引擎（独立子包，对应 cc-mini）
+│       ├── runner.py       # 入口 run_cc_mini()
+│       ├── core/           # engine.py / mcp_client.py / llm.py / tool.py / skill_registry.py
+│       ├── skills/         # 内置渐进式 skill：plan / ui-audit / recovery / nuclei-scan / button-check
+│       ├── tools/          # 可选工具：upload / download / nuclei / verify / wait_stable / load_skill
+│       ├── features/       # 报告渲染等确定性工具
+│       └── tests/          # Flash 子套件（pytest 已纳入）
+├── browser/                # session.py (BrowserSessionPool) / account_pool.py / context_manager.py
+├── actions/                # action_executor / action_handler / click_handler
+├── tools/                  # 默认工具 (action/ux/verify) + custom + core + registry.py
+├── llm/llm_api.py          # 多 provider LLMAPI（Claude/OpenAI/Gemini 自动判别）
+├── prompts/                # test_planning / agent_execution / ui_automation
+├── crawler/                # 站点抓取
+├── mcp_server/             # FastMCP 服务（暴露给 Cursor/Claude Code）
+│   ├── server.py           # 入口 & 工具注册（businesses/executions/files/testing）
+│   ├── client.py           # WebQAClient（调用全栈平台 REST API）
+│   ├── task_manager.py
+│   └── tools/
+├── templates/              # config.yaml.example 等
+└── utils/                  # 通用工具（find_config_file/load_cookies/test_file_library 等）
 
-- [ ] 是否影响现有的公共 API?
-- [ ] 是否改变了用户可见的行为?
-- [ ] 是否需要用户修改配置文件?
-- [ ] 是否需要更新文档和示例?
-- [ ] 是否测试了向后兼容性?
-- [ ] 上下游依赖是否需要适配?
+backend/                    # 全栈 Web Dashboard 后端（FastAPI + Alembic + PostgreSQL + Redis）
+frontend/                   # 全栈 Web Dashboard 前端（Vite + React + nginx）
+deploy/                     # docker-compose / k8s 部署清单
+skills/webqa/               # OpenClaw / Claude Code Skill 包（SKILL.md + references/）
+config/                     # config.yaml.example / config_run.yaml.example
+docs/                       # 用户文档（详见末尾）
+```
 
-### 4. 兼容性策略
+### 关键文件入口
 
-- **配置兼容**:旧配置仍然可用,新配置为可选
-- **API 兼容**:保留旧 API,新 API 为增强版
-- **数据兼容**:支持旧数据格式,自动迁移到新格式
-- **行为兼容**:默认行为不变,通过选项启用新行为
+| 角色                  | 位置                                                          |
+| --------------------- | ------------------------------------------------------------- |
+| CLI 主入口            | `webqa_agent/cli.py:main()`                                   |
+| Flash 引擎入口        | `webqa_agent/executor/flash/runner.py:run_cc_mini()`          |
+| Standard Gen 工作流   | `webqa_agent/executor/gen/graph.py`                           |
+| Run 用例编排          | `webqa_agent/executor/run_executor.py`                        |
+| 浏览器会话池          | `webqa_agent/browser/session.py:BrowserSessionPool`           |
+| 多 provider LLM       | `webqa_agent/llm/llm_api.py:LLMAPI`                           |
+| 工具注册中心          | `webqa_agent/tools/registry.py`                               |
+| MCP Server 入口       | `webqa_agent/mcp_server/server.py:main`                       |
+| Pydantic 配置模型     | `webqa_agent/config_models/` (`base_config.py`, `gen_config.py`, `run_config.py`) |
+| 配置模板              | `config/config.yaml.example`、`config/config_run.yaml.example`|
 
-### 5. 何时允许 breaking changes
+### 配置 → 执行 数据流
 
-- ✅ Major 版本升级(如 v0.2.x → v0.3.0)
-- ✅ 修复严重的安全漏洞
-- ✅ 修复导致数据损坏的 bug
-- ✅ 在充分沟通后废弃长期标记为 deprecated 的功能
+```
+config.yaml → cli.py validate_and_build_llm_config()
+            → engine 分发
+              ├─ flash:     runner.py → core/engine.py → MCP(chrome-devtools) → LLM
+              └─ standard:  GenConfig/RunConfig → GenExecutor/RunExecutor
+                              → executor/gen/graph.py (LangGraph)  或  CaseExecutor
+                              → BrowserSessionPool.acquire() → tools/* → LLMAPI
+```
 
 ______________________________________________________________________
 
-## 代码审查清单 (团队标准)
+## Flash 引擎要点（v0.3 默认）
 
-所有代码提交前必须通过以下检查:
-
-- [ ] **类型注解**:所有函数都有类型提示
-- [ ] **错误处理**:适当的 try-except 和日志记录
-- [ ] **测试**:编写/更新测试并通过
-- [ ] **文档**:更新代码注释和 markdown 文档
-- [ ] **清理**:无调试 print 语句或注释代码
-- [ ] **去冗余**:无重复的类、方法或变量
-- [ ] **兼容性**:保持向后兼容
-- [ ] **配置**:配置变更是可选的且有文档
-- [ ] **Pre-commit**:通过所有 pre-commit hooks
+- **驱动方式**：通过 `chrome-devtools-mcp`（stdio MCP）控制本机 Chrome；不走 Playwright。
+- **`business_objectives`**：可为字符串（单任务）**或字符串列表**（并发批量），空白条目会被过滤。
+- **并发**：CLI `-w` > `target.max_concurrent_tests` > 默认；单任务强制串行。
+- **渐进式 Skill 加载**：启动只注入 skill 摘要，命中时再加载详细指令以控制 token；内置 5 个 skill（`plan` / `ui-audit` / `recovery` / `nuclei-scan` / `button-check`），位于 `executor/flash/skills/`，每个目录遵循 `SKILL.md` + 可选 `scripts/` `resources/`。
+- **Cookie / 账号注入**：CLI 解析 `accounts:` 顶层配置或 `browser_config.cookies` 兜底，转成 cc-mini extensions；运行期可通过 `switch_account` 切换。
+- **测试文件池**：`test_config.test_files_dir`（+ 可选 `test_config.test_files` 白名单）→ `utils/test_file_library.py:TestFileLibrary` → 目录索引注入到 system prompt，agent 通过 `mcp__browser__upload_file` 自主上传。
+- **报告路径**：`reports/` 根目录；`save_screenshots` / `save_dataflow` 由 `report:` 段控制。
+- **LLM provider**：仅支持 `anthropic` / `openai`；Gemini 走 OpenAI 兼容模式。Anthropic 用户若没显式 `base_url`，CLI 会清除默认的 OpenAI URL（否则会破坏 Anthropic SDK 请求）。
+- **Provider 默认 temperature**：OpenAI=0.1，Anthropic/Gemini=1.0。**Extended Thinking 时 `temperature` 强制为 1.0，`max_tokens` 必须 > `budget_tokens`**（系统自动校正但建议合理配置；推荐 `effort: medium` 对应 `max_tokens: 20000-25000`）。
 
 ______________________________________________________________________
 
-## 项目概述
+## Standard 引擎要点
 
-WebQA Agent 是一个自主式 Web 浏览器代理,用于全面的网站测试(功能、性能、UX、安全)。使用 OpenAI/Anthropic/Gemini 模型和浏览器自动化提供 AI 驱动的测试。
+仅当 `engine: standard` 时启用。
 
-**理念**:自主探索和测试 - 无需手动脚本。适合快速迭代和 vibe-coding 工作流。
+### 单 Tab 架构（仅 Standard 模式）
 
-**核心能力**:
+> ⚠️ 这套分层协调机制是 Standard Gen 模式 UI Agent / UX Test 的实现细节；**Flash 模式不适用**，由 chrome-devtools MCP 自行管理 Tab。
 
-- AI 驱动的自主测试(无需手动脚本)
-- 多提供商 LLM 支持(OpenAI, Anthropic, Gemini)
-- **可扩展工具系统** - 通过 WebQABaseTool 添加自定义工具
-- 全面的测试模式(功能、UX、性能、安全)
+- 所有 AI 测试在单一浏览器 Tab 中完成；多 Tab 不支持。
+- 分层协调（防止 95%+ 的新 Tab，零冲突）：
+  - **Layer 0（基础）** `browser/session.py` — 通过 `add_init_script()` 做 context 级 DOM 预处理和事件监听。
+  - **Layer 1（增强）** `actions/action_handler.py` — 点击级增强（历史记录、周期检查、表单处理）。
+  - **Layer 2（监控）** `actions/click_handler.py` — 执行监控与结果跟踪。
+- **协调机制**：全局 flag 防止重复；session.py 优先，action_handler.py 增强。
+- **导航**：`GoBack`（浏览器历史）和 `GoToPage`（直跳 URL），返回 `True`/`False` 表示是否成功；普通 `<a target="_blank">` 链接被改写在当前 Tab 内打开。
+- **测试模式**：Click → Verify → GoBack。
+- **Basic Test（默认非 AI 模式）允许多 Tab**。
 
-**版本**: v0.2.x 系列(当前分支:`dev_0.2.4`,已发布:v0.2.3)
+### Browser Session 管理
 
-### 已移除的功能（待统一规划）
+- 全程使用 `BrowserSessionPool`：`pool.acquire()` / `pool.release()`，不使用单例。
+- 每 session 加锁防止竞态；session 创建是 pool 私有特权。
+- 历史 `Driver.getInstance()` / `driver.page` 均已迁移到 `pool.acquire()` / `session.page`。
 
-**StateRestorer**（v0.2.4 移除）：
+### 工具系统（仅 Standard）
 
-- 原功能：自动恢复 replanned case 的 URL 状态
-- 移除原因：将与 run 模式的 snapshot 功能统一规划
-- 当前行为：replanned cases 从 homepage 开始，需通过 `preamble_actions` 手动恢复状态
-- 保留字段：`_is_replanned`, `_replan_source`, `preamble_actions`（供后续使用）
+- **默认工具**（始终启用）：`tools/action_tool.py`、`tools/ux_tool.py`、`tools/verify_tool.py`
+- **自定义工具**（可选，通过 `test_config.custom_tools.enabled` 开启）：`lighthouse`、`nuclei`、`traverse_clickable_elements`、`detect_dynamic_links`
+- **核心实现**：`tools/core/` (`ui_driver.py`、`web_checks.py`、`lighthouse.py`)
+- **基类**：`tools/base.py:WebQABaseTool`（扩展点）
+- **注册中心**：`tools/registry.py` 负责依赖检测和过滤
+- 扩展指南：[docs/CUSTOM_TOOL_DEVELOPMENT.md](docs/CUSTOM_TOOL_DEVELOPMENT.md) / [AI 版](docs/CUSTOM_TOOL_DEVELOPMENT_AI.md)
 
-## Quick Reference
+______________________________________________________________________
 
-### Essential Commands
+## 错误处理（统一 Tag 系统）
 
-```bash
-# Testing
-uv run pytest tests/                              # Run all tests
-uv run pytest tests/test_action_executor.py -v    # Run specific test
+工具回复必须使用以下 tag 之一，executor / recovery 链据此决策：
 
-# Running WebQA Agent
-webqa-agent init                                  # Generate config.yaml template
-webqa-agent gen                                   # Generate test cases (AI mode)
-webqa-agent run                                   # Run tests (auto-discovers config)
+- `[SUCCESS]` — 成功
+- `[FAILURE:root_cause]` — 可恢复失败
+- `[CRITICAL_ERROR:root_cause]` — 不可恢复，必须中止
+- `[WARNING]` — 非阻塞问题
+- `[CANNOT_VERIFY]` — assertion 前置条件未满足
 
-# Browser Setup
-uv run playwright install chromium                # Install browser
+**失败分类**：`ELEMENT_NOT_FOUND` / `NAVIGATION_FAILED` / `PERMISSION_DENIED` / `PAGE_CRASHED` / `NETWORK_ERROR` / `SESSION_EXPIRED` / `UNSUPPORTED_PAGE` / `VALIDATION_ERROR`。
 
-# Code Quality (use pre-commit, not individual tools)
-pre-commit run --files <files>                    # Check/fix specific files
-pre-commit run --all-files                        # Check/fix all files
-```
+**自适应恢复**（`dynamic_step_generation.enabled = true` 时）：
 
-### Key File Locations
+- `ELEMENT_NOT_FOUND` 双层恢复（retry → LLM replanning）
+- 其他失败由 LLM 驱动恢复（GoBack / timeout / permission 等）
+- **循环检测**：同一错误模式重复 2+ 次直接中止
+- 策略：`retry_modified` / `skip` / `abort`
 
-- **CLI Entry**: `webqa_agent/cli.py:main()` - Command-line interface
-- **Configuration Models**: `webqa_agent/config_models/` - Pydantic V2 config classes (GenConfig, RunConfig)
-- **Browser Session Pool**: `webqa_agent/browser/session.py:BrowserSessionPool` - Browser lifecycle
-- **LLM API**: `webqa_agent/llm/llm_api.py:LLMAPI` - Multi-provider LLM client
-- **Action Handler**: `webqa_agent/actions/action_handler.py:ActionHandler` - Browser actions
-- **UI Driver**: `webqa_agent/tools/core/ui_driver.py:UITester` - AI-powered UI testing
-- **LangGraph Workflow**: `webqa_agent/executor/gen/graph.py` - AI workflow orchestration (Gen mode)
-- **Executors**: `webqa_agent/executor/` - GenExecutor and RunExecutor for dual-mode execution
-- **Tools Registry**: `webqa_agent/tools/registry.py` - Custom tools and default tools
-- **Prompts**: `webqa_agent/prompts/` - Prompt templates for test planning and execution
-- **Configuration File**: `config/config.yaml` - Main configuration file
+**自动处理**：JS 对话框（alert/confirm/prompt）自动接受；critical error 自动中止以节省资源。
 
-## Architecture Essentials
+______________________________________________________________________
 
-### Configuration Architecture (v0.2.4)
+## 研究和规划（CRITICAL）
 
-**Pydantic V2 Configuration Models** (`webqa_agent/config_models/`):
+**对于复杂任务或涉及第三方依赖,必须先做调研**：
 
-1. **Base Configs** (`base_config.py`)
+1. **Context7 MCP 工具** — `resolve-library-id` + `query-docs` 获取最新官方文档。
+2. **WebSearch** — 查找最佳实践和常见陷阱。
+3. **调研场景**：集成新三方库（Playwright/LangChain/FastAPI/chrome-devtools-mcp 等）、复杂异步/并发、不熟悉的 Python 特性、复杂工具链、安全相关功能。
+4. **流程**：识别难点 → 拉文档 → 查最佳实践 → 制定计划 → 实现。
 
-   - `BrowserConfig` - Browser settings (unified cookies management)
-   - `ReportConfig` - Report generation settings
-   - `LLMConfig` - LLM provider settings with Extended Thinking support
+❌ 不要想当然认为知道某个库的用法；不要跳过调研直接写代码；不要基于旧版本知识实现。
 
-2. **Mode-Specific Configs**
+______________________________________________________________________
 
-   - `GenConfig` (`gen_config.py`) - AI-driven test generation configuration
-   - `RunConfig` (`run_config.py`) - YAML case execution configuration
+## 代码质量要求（CRITICAL）
 
-3. **Key Features**
+### 规范性
 
-   - Field validators with `@field_validator` + `@classmethod`
-   - `.model_dump()` for serialization (Pydantic V2)
-   - Provider auto-detection (Claude/OpenAI/Gemini)
-   - Extended Thinking validation (temperature=1.0, max_tokens>budget_tokens)
+- **类型注解**：严格模式，所有函数必须有类型注解
+- **错误处理**：显式 try-except + 日志
+- **日志级别**：生产 `info`，调试 `debug`
 
-**Configuration Flow**:
+### 去冗余
 
-```
-config.yaml → CLI → GenConfig/RunConfig → Executor → LangGraph/CaseExecutor → Tools
-```
+- ❌ 不要创建重复的类/方法/变量；不要复制粘贴；不要保留废弃代码（Git 有历史）
+- ✅ 重构时整合相似功能；用继承/组合减少重复
 
-### Core Components
+### 命名
 
-1. **Browser Session Pool** (`webqa_agent/browser/session.py`)
+- 类 `PascalCase`、函数/方法 `snake_case`、常量 `UPPER_SNAKE_CASE`、私有 `_leading_underscore`
+- 避免模糊命名（`temp` / `tmp` / `data`）
 
-   - Pool-based concurrency with `acquire()`/`release()` semantics
-   - Automatic session recovery on failure
-   - Token-gated session creation (only pool can create sessions)
+详细规范见 `.claude/rules/python-quality.md`（如已建立）。
 
-2. **LLM Integration** (`webqa_agent/llm/llm_api.py`)
+______________________________________________________________________
 
-   - Auto-detection: `claude-*` → Anthropic, `gemini-*` → Gemini, `gpt-*` → OpenAI
-   - Environment variables: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`
-   - Provider-specific defaults (OpenAI temp=0.1, Anthropic/Gemini temp=1.0)
+## 兼容性和稳定性（CRITICAL）
 
-3. **Test Execution** (`webqa_agent/executor/`)
+避免非必要的 breaking changes：
 
-   - `GenExecutor` - Gen mode orchestration (AI-driven test generation)
-   - `RunExecutor` - Run mode orchestration (YAML case execution)
-   - `CaseExecutor` - Individual case execution with parallel support
-   - Session pool integration for resource management
+- ❌ 不要随意改公共 API 签名 / 改已有行为 / 删正在使用的代码
+- ✅ 新功能向后兼容；废弃用 deprecation 警告而非直接删；API 变更需迁移指南
+- **新特性设计**：零学习成本优先、默认可选、渐进增强、文档完善
+- **重构前 checklist**：是否影响公共 API？是否改变用户可见行为？是否需要改配置？是否更新文档？是否测了兼容性？上下游是否要适配？
+- **兼容性策略**：配置/API/数据/行为四个维度都保留旧路径，新路径作为增强
+- **何时允许 breaking**：major 版本（v0.2→v0.3）、安全漏洞、数据损坏、长期 deprecated 项
 
-4. **Executor/Gen** (`webqa_agent/executor/gen/`)
+______________________________________________________________________
 
-   - LangGraph-based AI agent workflows for Gen mode
-   - **Modular architecture:**
-     - `agents/` - Execution agents (execute_agent.py)
-     - `state/` - State schemas and management
-     - `utils/` - Case recorder and message converter
+## 代码审查清单（团队标准）
 
-5. **Tools System** (`webqa_agent/tools/`)
+所有代码提交前必须通过：
 
-   - **Default tools** (always enabled): action_tool.py, ux_tool.py, verify_tool.py
-   - **Custom tools** (optional): lighthouse_tool.py, nuclei_tool.py, button_check_tool.py, link_check_tool.py
-   - **Core implementations** (tools/core/): ui_driver.py, web_checks.py, lighthouse.py
-   - **Registry** (registry.py): Dependency checking and tool filtering
-   - **Base class** (base.py): WebQABaseTool for extensibility
+- [ ] 类型注解
+- [ ] 错误处理 + 日志
+- [ ] 测试编写/更新并通过
+- [ ] 文档更新
+- [ ] 清理调试 print / 注释代码
+- [ ] 无重复实现
+- [ ] 向后兼容
+- [ ] 配置变更可选 + 有文档
+- [ ] 所有 pre-commit hooks 通过（flake8/isort/codespell/pylint/gitleaks/mdformat 等，配置见 `.pre-commit-config.yaml`）
 
-6. **Prompts** (`webqa_agent/prompts/`)
+______________________________________________________________________
 
-   - `test_planning_prompts.py` - Test case planning and reflection
-   - `agent_execution_prompts.py` - Agent execution guidance
-   - `ui_automation_prompts.py` - UI automation and verification
+## 测试
 
-### Critical Constraints
-
-**Single-Tab Architecture** (AI Mode):
-
-- All testing in single browser tab - multi-tab not supported
-- Test modes:
-  - **AI Mode** (UI Agent, UX Test): Strict single-tab with layered coordination architecture
-  - **Default Mode** (Basic Test): Multi-tab allowed
-- **Layered Coordination Architecture** (prevents 95%+ of new tabs, zero conflicts):
-  - **Layer 0 (Base)**: session.py - Context-level DOM preprocessing and event listening via `add_init_script()`
-  - **Layer 1 (Enhancement)**: action_handler.py - Click-level enhancements (history recording, periodic checks, form handling)
-  - **Layer 2 (Monitoring)**: click_handler.py - Test execution monitoring and result tracking
-- **Coordination Mechanism**: Global flags prevent redundancy; session.py takes priority, action_handler.py enhances
-- **Features**: No memory leaks, no conflicts, preserves all validated functionality
-- Navigation: Use `GoBack` (browser history) and `GoToPage` (direct URL)
-- Test pattern: Click → Verify → GoBack
-
-**Browser Session Management**:
-
-- Migration: `Driver.getInstance()` → `pool.acquire()`, `driver.page` → `session.page`
-- No singleton pattern - sessions are pool-managed
-- Per-session locking prevents race conditions
-
-### Navigation Actions
-
-**GoBack** - Navigate to previous page
-
-- Returns `True` if succeeded, `False` if no history exists
-
-**GoToPage** - Navigate to specific URL
-
-- Returns `True` if navigation succeeded
-
-**Standard Links** - Click links normally
-
-- All clicks navigate current tab (even if `target="_blank"`)
-
-## Testing
-
-### Test Structure
-
-- `tests/conftest.py` - Shared fixtures (supports `--url` override)
-- `tests/mocks/` - JSON mock data for unit/integration tests
-- `tests/test_pages/` - Local HTML pages for isolated testing
-
-### Common Commands
+- `tests/conftest.py` — 共享 fixtures（支持 `--url` 覆盖）
+- `tests/mocks/` — JSON mock 数据
+- `tests/test_pages/` — 本地 HTML 测试页
+- `tests/test_cc_mini_*.py` + `webqa_agent/executor/flash/tests/` — Flash 引擎测试（已纳入 `pytest.ini_options.testpaths`）
+- `tests/test_mcp_server/` — MCP Server 测试
 
 ```bash
-uv run pytest tests/ -v -l                        # Verbose with local vars
-uv run pytest tests/ --cov=webqa_agent            # With coverage
-uv run pytest tests/ -s                           # Show print statements
-uv run pytest tests/test_crawler.py --url https://example.com
+uv run pytest tests/ -v -l                       # 详细 + 局部变量
+uv run pytest tests/ --cov=webqa_agent           # 覆盖率
+uv run pytest tests/ -s                          # 显示 print
 ```
 
-## Configuration
+______________________________________________________________________
 
-### LLM Setup Examples
+## MCP Server（暴露 WebQA 给 IDE）
 
-**OpenAI:**
+`webqa-mcp-server` 命令启动 FastMCP 服务（`webqa_agent/mcp_server/server.py`），让 Cursor / Claude Code 通过自然语言触发 WebQA 测试。
 
-```yaml
-llm_config:
-  model: gpt-4.1-2025-04-14
-  filter_model: gpt-4o-mini
-  api_key: ${OPENAI_API_KEY}
-  temperature: 0.1
-```
+- **环境变量**：`WEBQA_API_URL`（全栈平台地址）、`WEBQA_API_KEY`（平台 API Key）
+- **工作流**：`run_test` → 每 10s 轮询 `get_test_status` → `get_test_report`（典型耗时 2–10 min）
+- **工具模块**：`mcp_server/tools/` 下 `businesses` / `executions` / `files` / `testing`
+- **客户端**：`WebQAClient` (`mcp_server/client.py`) 调全栈平台 REST API
+- 配置参考：[docs/MCP_SERVER.md](docs/MCP_SERVER.md)
 
-**Anthropic Claude:**
+______________________________________________________________________
 
-```yaml
-llm_config:
-  model: claude-sonnet-4-5-20250929
-  filter_model: claude-haiku-4-5-20251001
-  api_key: ${ANTHROPIC_API_KEY}
-  temperature: 1.0  # Default for Claude; REQUIRED when using Extended Thinking
-  max_tokens: 20000  # Must be larger than budget_tokens
-  reasoning:
-    effort: medium  # Enables Extended Thinking (budget_tokens=10000)
-```
+## 全栈 Web 平台（可选）
 
-**Extended Thinking Requirements:**
+为团队提供持久化 Dashboard、测试管理、调度、历史：
 
-1. **temperature = 1.0** (Required, auto-enforced)
-2. **max_tokens > budget_tokens** (Required, auto-validated)
+- `backend/` — FastAPI + Alembic + PostgreSQL + Redis（架构见 `backend/BACKEND_ARCHITECTURE.md`）
+- `frontend/` — Vite + React + nginx
+- `deploy/docker-compose/` — 一键 `./start.sh`
+- `deploy/k8s/` — 生产 K8s
 
-**Recommended Configuration Table:**
+部署详见 [deploy/README.md](deploy/README.md)。
 
-| effort  | budget_tokens | recommended max_tokens | use case                    |
-| ------- | ------------- | ---------------------- | --------------------------- |
-| minimal | 1,024         | 2,000 - 3,000          | Quick tasks                 |
-| low     | 4,096         | 8,000 - 10,000         | Basic reasoning             |
-| medium  | 10,000        | 20,000 - 25,000        | **Recommended for testing** |
-| high    | 20,000        | 40,000 - 50,000        | Complex analysis            |
+> 平台目前仅有中文界面。
 
-**Note**: The system automatically adjusts `budget_tokens` if it exceeds `max_tokens`, but proper configuration yields better results. Temperature is automatically enforced to 1.0 when Extended Thinking is enabled.
+______________________________________________________________________
 
-**Google Gemini:**
+## 输出目录
 
-```yaml
-llm_config:
-  model: gemini-3-flash-preview
-  filter_model: gemini-2.5-flash-lite
-  api_key: ${GEMINI_API_KEY}
-  temperature: 1.0
-```
+| 路径                            | 说明                       |
+| ------------------------------- | -------------------------- |
+| `reports/`                      | HTML 测试报告（根目录）    |
+| `logs/`                         | 应用日志与 trace（根目录） |
+| `webqa_agent/logs/`             | 包级日志                   |
+| `webqa_agent/reports/`          | 包级报告                   |
+| `tests/actions_test_results/`   | 测试执行产物 + 截图        |
+| `tests/crawler_test_results/`   | Crawler 截图               |
 
-### Test Configuration
+______________________________________________________________________
 
-**Gen Mode (AI-driven testing):**
+## 用户文档（`docs/`）
 
-```yaml
-test_config:
-  business_objectives: "test search functionality"
-  custom_tools:
-    enabled: ['lighthouse', 'nuclei']  # Optional custom tools: lighthouse, nuclei, traverse_clickable_elements, detect_dynamic_links
-  dynamic_step_generation:
-    enabled: true
-    max_dynamic_steps: 5
-    min_elements_threshold: 2
-```
+- [MODES&CLI.md](docs/MODES&CLI.md) — 模式与 CLI 权威参考（中文版 `MODES&CLI_zh-CN.md`）
+- [MCP_SERVER.md](docs/MCP_SERVER.md) — MCP Server 工具参考
+- [CUSTOM_TOOL_DEVELOPMENT.md](docs/CUSTOM_TOOL_DEVELOPMENT.md) — 自定义工具开发（Standard 模式）
+- [CUSTOM_TOOL_DEVELOPMENT_AI.md](docs/CUSTOM_TOOL_DEVELOPMENT_AI.md) — AI 增强工具
+- `webqa_agent/executor/flash/README.md` — Flash 引擎细节
+- `webqa_agent/executor/flash/skills/README.md` — Flash skill 编写规范
+- `skills/webqa/SKILL.md` — OpenClaw / Claude Code Skill 包
 
-**Browser Config:**
+______________________________________________________________________
 
-```yaml
-browser_config:
-  viewport: {width: 1280, height: 720}
-  headless: false  # Auto true in Docker
-  language: en-US
-  save_screenshots: false
-```
-
-## Error Handling
-
-### Unified Tag System
-
-**Tool Response Tags:**
-
-- `[SUCCESS]` - Action completed successfully
-- `[FAILURE:root_cause]` - Recoverable failure
-- `[CRITICAL_ERROR:root_cause]` - Unrecoverable, must abort
-- `[WARNING]` - Non-blocking issue
-- `[CANNOT_VERIFY]` - Assertion prerequisite failed
-
-**Failure Categories:**
-
-1. ELEMENT_NOT_FOUND - Element missing/inaccessible
-2. NAVIGATION_FAILED - Page navigation failures
-3. PERMISSION_DENIED - Access denied
-4. PAGE_CRASHED - Browser crash
-5. NETWORK_ERROR - Network issues
-6. SESSION_EXPIRED - Authentication expired
-7. UNSUPPORTED_PAGE - PDF/plugin pages
-8. VALIDATION_ERROR - Form validation failures
-
-### Adaptive Recovery
-
-When `dynamic_step_generation.enabled = true`:
-
-- **Two-layer recovery** for ELEMENT_NOT_FOUND (retry + LLM replanning)
-- **LLM-driven recovery** for all failure types (GoBack, timeout, permission, etc.)
-- **Loop detection**: Aborts if same error pattern repeats (2+ times)
-- **Strategies**: retry_modified, skip, abort
-
-### Auto-Handled Features
-
-- **JavaScript dialogs**: Auto-accepted (`alert()`, `confirm()`, `prompt()`)
-- **Critical errors**: Auto-abort to save resources
-- **Browser state**: Detection flags for navigation actions (GoBack, GoToPage)
-
-## Development
-
-### Local Setup
+## 快速故障排查
 
 ```bash
-uv sync                                           # Install dependencies
-uv run playwright install chromium                # Install browser
-webqa-agent run                                   # Run tests
-```
-
-### Docker Setup
-
-```bash
-./start.sh --build                                # Build and start
-./start.sh --local                                # Start existing image
-docker-compose down                               # Stop services
-```
-
-### Code Quality
-
-```bash
-pre-commit install                                # Install pre-commit hooks
-pre-commit run --all-files                        # Run all hooks
-```
-
-## Documentation
-
-📚 **User-facing documentation in `/docs`:**
-
-- **[CUSTOM_TOOL_DEVELOPMENT.md](docs/CUSTOM_TOOL_DEVELOPMENT.md)** - Building custom tools for agent extensibility
-- **[CUSTOM_TOOL_DEVELOPMENT_AI.md](docs/CUSTOM_TOOL_DEVELOPMENT_AI.md)** - AI-enhanced custom tool development
-- **[MODES&CLI.md](docs/MODES&CLI.md)** - Complete CLI reference and test modes
-
-Chinese versions also available: CUSTOM_TOOL_DEVELOPMENT_zh-CN.md, MODES&CLI_zh-CN.md
-
-📝 **Claude's working documents in `/claude_docs`:**
-
-All Claude-generated documentation is organized in `/claude_docs`:
-
-- **Top level:** General reference docs (ARCHITECTURE.md, CONFIGURATION.md, DEVELOPMENT.md, TROUBLESHOOTING.md)
-- **sessions/:** Session-specific work documents using format `YYYY-MM-DD_task-description`
-
-See [claude_docs/README.md](claude_docs/README.md) for structure details and naming conventions.
-
-**For future Claude sessions:** All new documentation should follow the session-based organization in `claude_docs/sessions/YYYY-MM-DD_task-description/`.
-
-## Output Structure
-
-- `reports/` - Generated HTML test reports (root level)
-- `logs/` - Application logs and traces (root level)
-- `webqa_agent/logs/` - Application logs (package level)
-- `webqa_agent/reports/` - Test reports (package level)
-- `tests/actions_test_results/` - Test execution outputs
-- `tests/actions_test_results/screenshots/` - Action test screenshots
-- `tests/crawler_test_results/screenshots/` - Crawler test screenshots
-
-## Quick Troubleshooting
-
-**Playwright not installed:**
-
-```bash
+# Playwright 未安装
 uv run playwright install chromium
+
+# Flash 模式 chrome-devtools-mcp 缺失
+npm install -g chrome-devtools-mcp@latest
+
+# API Key
+export OPENAI_API_KEY="..."         # 或 ANTHROPIC_API_KEY / GEMINI_API_KEY
+
+# 配置定位
+webqa-agent init                                  # 生成模板
+webqa-agent run -c /path/to/config.yaml           # 指定路径
+
+# 开启 debug 日志
+# config.yaml:
+#   log:
+#     level: debug
 ```
-
-**API key issues:**
-
-```bash
-export OPENAI_API_KEY="your-key"
-# or
-export ANTHROPIC_API_KEY="your-key"
-# or
-export GEMINI_API_KEY="your-key"
-```
-
-**Config not found:**
-
-```bash
-webqa-agent init                                  # Generate template
-webqa-agent run -c /path/to/config.yaml           # Specify path
-```
-
-**Enable debug logging:**
-
-```yaml
-log:
-  level: debug
-```
-
-See [TROUBLESHOOTING.md](claude_docs/TROUBLESHOOTING.md) for complete guide.
