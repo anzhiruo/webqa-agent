@@ -10,6 +10,7 @@ import copy
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
@@ -593,7 +594,7 @@ async def _start_gen_executor(execution_id: str, gen_config_dict: Optional[Dict[
                 env['OPENAI_BASE_URL'] = base_url
 
             process = await asyncio.create_subprocess_exec(
-                'python', '-m', 'backend.gen_webqa',
+                sys.executable, '-m', 'backend.gen_webqa',
                 '-c', config_path,
                 '--execution-id', execution_id,
                 '--report-dir', str(config_dir),
@@ -1027,7 +1028,7 @@ async def _start_agent_subprocess(execution_id: str, case_data: Optional[Dict[st
         env['WEBQA_CASE_TIMEOUT'] = str(settings.WEBQA_CASE_TIMEOUT)
 
         process = await asyncio.create_subprocess_exec(
-            'python', '-m', 'backend.run_webqa',
+            sys.executable, '-m', 'backend.run_webqa',
             '-c', prep['config_path'],
             '-w', str(prep['workers']),
             '--execution-id', execution_id,

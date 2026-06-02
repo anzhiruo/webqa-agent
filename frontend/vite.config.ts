@@ -58,11 +58,11 @@ export default defineConfig({
     port: 3000,
     open: true,
     proxy: {
-      '/api': {
+      '^/api/': {
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
-      '/reports': {
+      '^/reports/': {
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
